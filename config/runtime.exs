@@ -17,7 +17,9 @@ import Config
 # Alternatively, you can use `mix phx.gen.release` to generate a `bin/server`
 # script that automatically sets the env var above.
 if System.get_env("PHX_SERVER") do
-  config :elixir_phoenix, ElixirPhoenixWeb.Endpoint, server: true
+  config :elixir_phoenix, ElixirPhoenixWeb.Endpoint,
+  cache_static_manifest: "priv/static/cache_manifest.json",
+  server: true
 end
 
 config :elixir_phoenix, ElixirPhoenixWeb.Endpoint,
@@ -36,7 +38,8 @@ if config_env() == :prod do
   config :elixir_phoenix, ElixirPhoenix.Repo,
     # ssl: true,
     url: database_url,
-    pool_size: String.to_integer(System.get_env("POOL_SIZE") || "10"),
+    pool_size: String.to_integer(System.get_env("POOL_SIZE") || "20"),
+    queue_timeout: 5000,
     # For machines with several cores, consider starting multiple pools of `pool_size`
     # pool_count: 4,
     socket_options: maybe_ipv6
@@ -56,6 +59,7 @@ if config_env() == :prod do
   host = System.get_env("PHX_HOST") || "example.com"
 
   config :elixir_phoenix, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
+  config :logger, level: :warning
   port = String.to_integer(System.get_env("PORT") || "4000")
   config :elixir_phoenix, ElixirPhoenixWeb.Endpoint,
     server: true,

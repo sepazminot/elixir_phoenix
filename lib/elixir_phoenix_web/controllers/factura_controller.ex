@@ -23,19 +23,21 @@ defmodule ElixirPhoenixWeb.FacturaController do
 
   # GET /api/facturas/:id
   def show(conn, %{"id" => id}) do
-    case Repo.get(Factura, id) |> Repo.preload(:detalle) do
+    import Ecto.Query
+
+    query =
+      from f in Factura,
+        join: d in Detalle,
+        on: d.factura_id == f.id,
+        where: f.id == ^id,
+        select: {f, d}
+
+    case Repo.one(query) do
       nil ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "Factura no encontrada"})
+        conn |> put_status(:not_found) |> json(%{error: "Factura no encontrada"})
 
-      %{detalle: nil} ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "Factura sin detalle asociado"})
-
-      factura ->
-        json(conn, format_response(factura, factura.detalle))
+      {factura, detalle} ->
+        json(conn, format_response(factura, detalle))
     end
   end
 
@@ -182,44 +184,18 @@ defmodule ElixirPhoenixWeb.FacturaController do
 
   # DELETE /api/facturas/:id
   def delete(conn, %{"id" => id}) do
-    result =
-      Repo.transaction(fn ->
-        case Repo.get(Factura, id) |> Repo.preload(:detalle) do
-          nil ->
-            Repo.rollback(:not_found)
+    import Ecto.Query
 
-          factura ->
-            detalle = factura.detalle
+    # Genera una query filtrada por el ID
+    query = from(f in Factura, where: f.id == ^id)
 
-            case Repo.delete(factura) do
-              {:ok, _} ->
-                {factura, detalle}
+    # Borra directamente en la base de datos (Devuelve {cantidad_borrada, nil})
+    case Repo.delete_all(query) do
+      {1, _} ->
+        json(conn, %{id: id, message: "Factura eliminada"})
 
-              {:error, changeset} ->
-                Repo.rollback({:delete_error, changeset})
-            end
-        end
-      end)
-
-    case result do
-      {:ok, {factura, detalle}} ->
-        json(conn, %{
-          id: factura.id,
-          num_factura: factura.num_factura,
-          customer: factura.customer,
-          employee: factura.employee,
-          message: "Factura eliminada"
-        })
-
-      :not_found ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "Factura no encontrada"})
-
-      {:error, {:delete_error, changeset}} ->
-        conn
-        |> put_status(:internal_server_error)
-        |> json(%{error: "Error al eliminar: #{inspect(changeset.errors)}"})
+      {0, _} ->
+        conn |> put_status(:not_found) |> json(%{error: "Factura no encontrada"})
     end
   end
 end

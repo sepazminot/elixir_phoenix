@@ -11,6 +11,10 @@ config :elixir_phoenix,
   ecto_repos: [ElixirPhoenix.Repo],
   generators: [timestamp_type: :utc_datetime]
 
+config :elixir_phoenix, ElixirPhoenix.Repo,
+  pool_size: 25,
+  queue_timeout: 5000
+
 # Configure the endpoint
 config :elixir_phoenix, ElixirPhoenixWeb.Endpoint,
   url: [host: "localhost"],

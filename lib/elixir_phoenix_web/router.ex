@@ -5,7 +5,7 @@ defmodule ElixirPhoenixWeb.Router do
     plug :accepts, ["json"]
   end
 
-  scope "/api", ElixirPhoenixWeb do
+  scope "/", ElixirPhoenixWeb do
     pipe_through :api
     # Users
     get "/users/:id", UserController, :show
