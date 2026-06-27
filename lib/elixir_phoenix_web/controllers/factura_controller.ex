@@ -4,7 +4,7 @@ defmodule ElixirPhoenixWeb.FacturaController do
   alias ElixirPhoenix.{Factura, Detalle}
   import Ecto.Query
 
-  # Helper: Formatear respuesta
+  # Helper: Formatear respuesta idéntica a Express y Go
   defp format_response(factura, detalle) do
     %{
       id: factura.id,
@@ -24,6 +24,8 @@ defmodule ElixirPhoenixWeb.FacturaController do
 
   # GET /api/facturas/:id
   def show(conn, %{"id" => id}) do
+    id = String.to_integer(id)
+
     query =
       from f in Factura,
         join: d in Detalle,
@@ -40,7 +42,7 @@ defmodule ElixirPhoenixWeb.FacturaController do
     end
   end
 
-  # POST /api/facturas
+  # POST /api/facturas (Transaccional)
   def create(conn, %{
         "num_factura" => num_factura,
         "customer" => customer,
@@ -49,36 +51,28 @@ defmodule ElixirPhoenixWeb.FacturaController do
       }) do
     result =
       Repo.transaction(fn ->
-        # 1. Insertar factura
-        factura_changeset =
-          Factura.changeset(%Factura{}, %{
-            num_factura: num_factura,
-            customer: customer,
-            employee: employee
-          })
+        factura_changeset = Factura.changeset(%Factura{}, %{
+          num_factura: num_factura,
+          customer: customer,
+          employee: employee
+        })
 
         case Repo.insert(factura_changeset) do
           {:ok, factura} ->
-            # 2. Insertar detalle
-            detalle_changeset =
-              Detalle.changeset(%Detalle{}, %{
-                factura_id: factura.id,
-                product: detail_params["product"],
-                quantity: detail_params["quantity"],
-                price: detail_params["price"],
-                total: detail_params["total"]
-              })
+            detalle_changeset = Detalle.changeset(%Detalle{}, %{
+              factura_id: factura.id,
+              product: detail_params["product"],
+              quantity: detail_params["quantity"],
+              price: detail_params["price"],
+              total: detail_params["total"]
+            })
 
             case Repo.insert(detalle_changeset) do
-              {:ok, detalle} ->
-                {factura, detalle}
-
-              {:error, changeset} ->
-                Repo.rollback({:detalle_error, changeset})
+              {:ok, detalle} -> {factura, detalle}
+              {:error, _} -> Repo.rollback(:error_transaccional)
             end
 
-          {:error, changeset} ->
-            Repo.rollback({:factura_error, changeset})
+          {:error, _} -> Repo.rollback(:error_transaccional)
         end
       end)
 
@@ -88,19 +82,14 @@ defmodule ElixirPhoenixWeb.FacturaController do
         |> put_status(:created)
         |> json(format_response(factura, detalle))
 
-      {:error, {:factura_error, changeset}} ->
+      {:error, :error_transaccional} ->
         conn
-        |> put_status(:bad_request)
-        |> json(%{error: "Error al crear factura: #{inspect(changeset.errors)}"})
-
-      {:error, {:detalle_error, changeset}} ->
-        conn
-        |> put_status(:bad_request)
-        |> json(%{error: "Error al crear detalle: #{inspect(changeset.errors)}"})
+        |> put_status(:internal_server_error)
+        |> json(%{error: "Error al crear la factura transaccional"})
     end
   end
 
-  # PUT /api/facturas/:id
+  # PUT /api/facturas/:id (Optimizado: Ejecución atómica sin SELECTs previos)
   def update(conn, %{
         "id" => id_param,
         "num_factura" => num_factura,
@@ -113,101 +102,58 @@ defmodule ElixirPhoenixWeb.FacturaController do
           "total" => total
         }
       }) do
-    # 1. Validar e idéntico parseo de ID (Igual que en Express y Go)
-    case Integer.parse(id_param) do
-      {id, ""} ->
-        # 2. Iniciar la transacción nativa en bloque (Equivalente a BEGIN)
-        result =
-          Repo.transaction(fn ->
-            factura_query = from(f in Factura, where: f.id == ^id)
+    id = String.to_integer(id_param)
 
-            # UPDATE directo de la cabecera (Primer viaje de escritura)
-            case Repo.update_all(factura_query,
-                   set: [num_factura: num_factura, customer: customer, employee: employee]
-                 ) do
+    result =
+      Repo.transaction(fn ->
+        factura_query = from(f in Factura, where: f.id == ^id)
+
+        case Repo.update_all(factura_query, set: [num_factura: num_factura, customer: customer, employee: employee]) do
+          {0, _} ->
+            Repo.rollback(:factura_not_found)
+
+          {1, _} ->
+            detalle_query = from(d in Detalle, where: d.factura_id == ^id)
+
+            case Repo.update_all(detalle_query, set: [product: product, quantity: quantity, price: price, total: total]) do
               {0, _} ->
-                # Si afectó 0 filas, la factura no existía. Gatilla ROLLBACK automático.
-                Repo.rollback(:factura_not_found)
+                Repo.rollback(:detail_not_found)
 
               {1, _} ->
-                # UPDATE directo del detalle (Segundo viaje de escritura)
-                detalle_query = from(d in Detalle, where: d.factura_id == ^id)
+                # Obtenemos el ID de forma atómica para armar el JSON de respuesta exacto
+                detalle_id = Repo.one(from(d in Detalle, where: d.factura_id == ^id, select: d.id))
 
-                case Repo.update_all(detalle_query,
-                       set: [product: product, quantity: quantity, price: price, total: total]
-                     ) do
-                  {0, _} ->
-                    Repo.rollback(:detail_not_found)
+                factura_struct = %Factura{id: id, num_factura: num_factura, customer: customer, employee: employee}
+                detalle_struct = %Detalle{id: detalle_id, factura_id: id, product: product, quantity: quantity, price: price, total: total}
 
-                  {1, _} ->
-                    # Obtenemos el ID del detalle de forma atómica dentro de la transacción
-                    detalle_id =
-                      Repo.one(from(d in Detalle, where: d.factura_id == ^id, select: d.id))
-
-                    # Construimos las estructuras al vuelo usando los datos que ya validó la BD
-                    # Esto evita los SELECT innecesarios antes de los updates.
-                    factura_struct = %Factura{
-                      id: id,
-                      num_factura: num_factura,
-                      customer: customer,
-                      employee: employee
-                    }
-
-                    detalle_struct = %Detalle{
-                      id: detalle_id,
-                      factura_id: id,
-                      product: product,
-                      quantity: quantity,
-                      # Casteamos a tipo decimal para respetar el formato original del changeset
-                      price: Ecto.Type.cast!(:decimal, price),
-                      total: Ecto.Type.cast!(:decimal, total)
-                    }
-
-                    {factura_struct, detalle_struct}
-                end
+                {factura_struct, detalle_struct}
             end
-          end)
-
-        # 3. Procesar el resultado de la transacción
-        case result do
-          {:ok, {factura, detalle}} ->
-            # Si llegó aquí, la base de datos aplicó el COMMIT automáticamente
-            json(conn, format_response(factura, detalle))
-
-          {:error, :factura_not_found} ->
-            conn |> put_status(:not_found) |> json(%{error: "Factura no encontrada"})
-
-          {:error, :detail_not_found} ->
-            conn
-            |> put_status(:not_found)
-            |> json(%{error: "Detalle no encontrado para esta factura"})
-
-          {:error, _reason} ->
-            conn
-            |> put_status(:internal_server_error)
-            |> json(%{error: "Error al actualizar la factura"})
         end
+      end)
 
-      _ ->
-        conn |> put_status(:bad_request) |> json(%{error: "ID inválido"})
+    case result do
+      {:ok, {factura, detalle}} ->
+        json(conn, format_response(factura, detalle))
+
+      {:error, :factura_not_found} ->
+        conn |> put_status(:not_found) |> json(%{error: "Factura no encontrada"})
+
+      {:error, :detail_not_found} ->
+        conn |> put_status(:not_found) |> json(%{error: "Detalle no encontrado para esta factura"})
+
+      {:error, _} ->
+        conn |> put_status(:internal_server_error) |> json(%{error: "Error al actualizar la factura"})
     end
-  end
-
-  def update(conn, _params) do
-    conn
-    |> put_status(:bad_request)
-    |> json(%{error: "Todos los campos son requeridos"})
   end
 
   # DELETE /api/facturas/:id
   def delete(conn, %{"id" => id}) do
-    # Genera una query filtrada por el ID
+    id = String.to_integer(id)
     query = from(f in Factura, where: f.id == ^id)
 
-    # Borra directamente en la base de datos (Devuelve {cantidad_borrada, nil})
     case Repo.delete_all(query) do
       {1, _} ->
-        json(conn, %{id: id, message: "Factura eliminada"})
+        json(conn, %{message: "Factura eliminada correctamente"})
 
       {0, _} ->
         conn |> put_status(:not_found) |> json(%{error: "Factura no encontrada"})

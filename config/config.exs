@@ -12,7 +12,7 @@ config :elixir_phoenix,
   generators: [timestamp_type: :utc_datetime]
 
 config :elixir_phoenix, ElixirPhoenix.Repo,
-  pool_size: 25,
+  pool_size: 20,
   queue_timeout: 5000
 
 # Configure the endpoint

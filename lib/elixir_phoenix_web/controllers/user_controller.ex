@@ -2,9 +2,12 @@ defmodule ElixirPhoenixWeb.UserController do
   use ElixirPhoenixWeb, :controller
   alias ElixirPhoenix.Repo
   alias ElixirPhoenix.User
+  import Ecto.Query
 
   # GET /api/users/:id
   def show(conn, %{"id" => id}) do
+    id = String.to_integer(id)
+
     case Repo.get(User, id) do
       nil ->
         conn
@@ -34,63 +37,46 @@ defmodule ElixirPhoenixWeb.UserController do
           password: user.password
         })
 
-      {:error, changeset} ->
+      {:error, _changeset} ->
         conn
-        |> put_status(:bad_request)
-        |> json(%{error: "Error al crear usuario: #{inspect(changeset.errors)}"})
+        |> put_status(:internal_server_error)
+        |> json(%{error: "Error al crear el usuario"})
     end
   end
 
-  # PUT /api/users/:id
+  # PUT /api/users/:id (Optimizado: Sin SELECT previo, un solo viaje a la BD)
   def update(conn, %{"id" => id, "email" => email, "password" => password}) do
-    case Repo.get(User, id) do
-      nil ->
+    id = String.to_integer(id)
+    query = from(u in User, where: u.id == ^id)
+
+    case Repo.update_all(query, set: [email: email, password: password]) do
+      {0, _} ->
         conn
         |> put_status(:not_found)
         |> json(%{error: "Usuario no encontrado"})
 
-      user ->
-        changeset = User.changeset(user, %{email: email, password: password})
-
-        case Repo.update(changeset) do
-          {:ok, updated_user} ->
-            json(conn, %{
-              id: updated_user.id,
-              email: updated_user.email,
-              password: updated_user.password
-            })
-
-          {:error, changeset} ->
-            conn
-            |> put_status(:bad_request)
-            |> json(%{error: "Error al actualizar: #{inspect(changeset.errors)}"})
-        end
+      {1, _} ->
+        json(conn, %{
+          id: id,
+          email: email,
+          password: password
+        })
     end
   end
 
-  # DELETE /api/users/:id
+  # DELETE /api/users/:id (Optimizado: Eliminación directa)
   def delete(conn, %{"id" => id}) do
-    case Repo.get(User, id) do
-      nil ->
+    id = String.to_integer(id)
+    query = from(u in User, where: u.id == ^id)
+
+    case Repo.delete_all(query) do
+      {1, _} ->
+        json(conn, %{message: "Usuario eliminado"})
+
+      {0, _} ->
         conn
         |> put_status(:not_found)
         |> json(%{error: "Usuario no encontrado"})
-
-      user ->
-        case Repo.delete(user) do
-          {:ok, deleted_user} ->
-            json(conn, %{
-              id: deleted_user.id,
-              email: deleted_user.email,
-              password: deleted_user.password,
-              message: "Usuario eliminado"
-            })
-
-          {:error, changeset} ->
-            conn
-            |> put_status(:internal_server_error)
-            |> json(%{error: "Error al eliminar: #{inspect(changeset.errors)}"})
-        end
     end
   end
 end
